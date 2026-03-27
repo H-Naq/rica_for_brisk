@@ -126,18 +126,58 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
+// Regex to extract acquisition label from BIDS-style filenames like
+// sub-001_ses-1_task-rest_acq-D1hypermepi3mm_run-05_part-mag_desc-ICA_mixing.tsv
+const ACQ_RE = /acq-([^_]+?)hypermepi3mm/;
+
+// Works for both File objects (f.name) and plain strings (server file paths)
+function getFilename(f) {
+  return typeof f === "string" ? f.split("/").pop() : f.name;
+}
+
+// Return sorted unique acquisition labels found in a file list
+function extractAcqLabels(files) {
+  const labels = new Set();
+  for (const f of files) {
+    const m = ACQ_RE.exec(getFilename(f));
+    if (m) labels.add(m[1]);
+  }
+  return [...labels].sort();
+}
+
+// Filter a file list to only those belonging to acqLabel.
+// Files without an acq- pattern (e.g. report.txt, registry.json) are always kept.
+// acq-specific manual classification files are matched by label.
+function filterByAcquisition(files, acqLabel) {
+  if (!acqLabel) return files;
+  const acqStr = `acq-${acqLabel}hypermepi3mm`;
+  return files.filter((f) => {
+    const name = getFilename(f);
+    if (ACQ_RE.test(name)) return name.includes(acqStr);
+    if (/manual_classification_acq-/.test(name)) {
+      return name === `manual_classification_acq-${acqLabel}.tsv`;
+    }
+    return true;
+  });
+}
+
 function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark }) {
   const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
   const hasTriedServerLoad = useRef(false);
+  // Acquisition picker state: set when multiple acq labels are found in the folder
+  const [pendingLoad, setPendingLoad] = useState(null); // { type: "browser"|"server", files, basePath? }
+  const [acquisitionLabels, setAcquisitionLabels] = useState([]);
+  const [selectedAcquisition, setSelectedAcquisition] = useState("");
 
   // Load files from local server via HTTP
   const loadFromServer = useCallback(
-    async (files, basePath) => {
-      console.log("[Rica] Starting server load with", files.length, "files");
+    async (files, basePath, acqLabel = null) => {
+      console.log("[Rica] Starting server load with", files.length, "files", acqLabel ? `(acq: ${acqLabel})` : "");
       onLoadingStart();
 
-      // Filter to relevant files
-      const relevantFiles = files.filter(
+      // Filter to the selected acquisition first, then to relevant file types
+      const acqFiles = filterByAcquisition(files, acqLabel);
+      const relevantFiles = acqFiles.filter(
         (f) =>
           f.includes("comp_") ||
           f.includes(".svg") ||
@@ -150,7 +190,7 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
           f.includes("_mask.nii") ||
           f.includes("CrossComponent_metrics.json") ||
           (f.includes("cross_component_metrics.json") && !f.toLowerCase().includes("pca")) ||
-          f === "manual_classification.tsv" ||
+          f.split("/").pop().startsWith("manual_classification") ||
           // QC NIfTI files
           f.includes("T2starmap.nii") ||
           f.includes("t2svG.nii") ||
@@ -182,8 +222,9 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
       const qcNiftiBuffers = {};
       // External regressors correlation figure
       let externalRegressorsFigure = null;
-      // Manual classification data
+      // Manual classification data — acq-specific file takes precedence over generic
       let manualClassificationData = null;
+      let manualClassificationDataAcq = null;
       // Decision tree data
       let decisionTreeData = null;
       let statusTableData = null;
@@ -332,12 +373,21 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
             setLoadingProgress((prev) => ({ ...prev, current: prev.current + 1 }));
           }
 
-          // Manual classification file
+          // Manual classification file — generic fallback
           if (filename === "manual_classification.tsv") {
             const response = await fetch(`/${filepath}`);
             const text = await response.text();
             manualClassificationData = parseManualClassification(text);
             console.log("[Rica] Loaded manual_classification.tsv with", manualClassificationData?.length || 0, "entries");
+            setLoadingProgress((prev) => ({ ...prev, current: prev.current + 1 }));
+          }
+
+          // Acquisition-specific manual classification file (takes precedence)
+          if (acqLabel && filename === `manual_classification_acq-${acqLabel}.tsv`) {
+            const response = await fetch(`/${filepath}`);
+            const text = await response.text();
+            manualClassificationDataAcq = parseManualClassification(text);
+            console.log(`[Rica] Loaded manual_classification_acq-${acqLabel}.tsv with`, manualClassificationDataAcq?.length || 0, "entries");
             setLoadingProgress((prev) => ({ ...prev, current: prev.current + 1 }));
           }
 
@@ -392,8 +442,11 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
       carpetFigures.sort((a, b) => a.name.localeCompare(b.name));
       diagnosticFigures.sort((a, b) => a.name.localeCompare(b.name));
 
+      // Acq-specific file takes precedence over generic manual_classification.tsv
+      const effectiveManualClassification = manualClassificationDataAcq || manualClassificationData;
+
       // Apply manual classifications if available
-      applyManualClassifications(components, manualClassificationData);
+      applyManualClassifications(components, effectiveManualClassification);
 
       trackDatasetLoaded();
 
@@ -413,11 +466,12 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
         crossComponentMetrics,
         qcNiftiBuffers,
         externalRegressorsFigure,
-        hasManualClassifications: manualClassificationData && manualClassificationData.length > 0,
+        hasManualClassifications: effectiveManualClassification && effectiveManualClassification.length > 0,
         // Decision tree data
         decisionTreeData,
         statusTableData,
         repetitionTime,
+        acquisitionLabel: acqLabel,
       });
     },
     [onDataLoad, onLoadingStart]
@@ -438,8 +492,15 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
       .then((data) => {
         console.log("[Rica] Server response:", data.files?.length, "files found");
         if (data.files?.length > 0) {
-          // Auto-load immediately
-          loadFromServer(data.files, data.path);
+          const labels = extractAcqLabels(data.files);
+          if (labels.length > 1) {
+            // Multiple acquisitions — show picker before loading
+            setAcquisitionLabels(labels);
+            setSelectedAcquisition(labels[0]);
+            setPendingLoad({ type: "server", files: data.files, basePath: data.path });
+          } else {
+            loadFromServer(data.files, data.path, labels[0] || null);
+          }
         }
       })
       .catch((err) => {
@@ -448,26 +509,28 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
       });
   }, [loadFromServer]);
 
-  const processFiles = useCallback(
-    async (e) => {
+  // Core file-processing logic, separated so it can be called after the
+  // acquisition picker or directly when there's only one (or no) acquisition.
+  const doProcessFiles = useCallback(
+    async (files, acqLabel = null) => {
       onLoadingStart();
 
-      const files = Array.from(e.target.files);
-      const totalFiles = files.filter(
+      // Filter to selected acquisition first, then to relevant file types
+      const acqFiles = filterByAcquisition(files, acqLabel);
+      const totalFiles = acqFiles.filter(
         (f) =>
           f.name.includes("comp_") ||
           f.name.includes(".svg") ||
           f.name === "report.txt" ||
           (f.name.includes("_metrics.tsv") && !f.name.toLowerCase().includes("pca")) ||
           (f.name.startsWith("tedana_20") && f.name.endsWith(".tsv")) ||
-          // New files for Niivue integration
           (f.name.includes("_mixing.tsv") && !f.name.toLowerCase().includes("pca") && !f.name.toLowerCase().includes("orth")) ||
           (f.name.includes("_components.nii.gz") && f.name.toLowerCase().includes("ica") && !f.name.includes("stat-z") && !f.name.includes("echo-")) ||
           f.name === "betas_OC.nii.gz" ||
           f.name.includes("_mask.nii") ||
           f.name.includes("CrossComponent_metrics.json") ||
           (f.name.includes("cross_component_metrics.json") && !f.name.toLowerCase().includes("pca")) ||
-          f.name === "manual_classification.tsv" ||
+          f.name.startsWith("manual_classification") ||
           // QC NIfTI files
           f.name.includes("T2starmap.nii") ||
           f.name.includes("t2svG.nii") ||
@@ -499,8 +562,9 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
       const qcNiftiBuffers = {};
       // External regressors correlation figure
       let externalRegressorsFigure = null;
-      // Manual classification data
+      // Manual classification data — acq-specific file takes precedence over generic
       let manualClassificationData = null;
+      let manualClassificationDataAcq = null;
       // Decision tree data
       let decisionTreeData = null;
       let statusTableData = null;
@@ -508,7 +572,7 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
       let repetitionTime = null;
 
       // Process all files in parallel using Promise.all
-      const filePromises = files.map(async (file) => {
+      const filePromises = acqFiles.map(async (file) => {
         const filename = file.name;
 
         try {
@@ -628,11 +692,19 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
             setLoadingProgress((prev) => ({ ...prev, current: prev.current + 1 }));
           }
 
-          // Manual classification file
+          // Manual classification file — generic fallback
           if (filename === "manual_classification.tsv") {
             const text = await readFileAsText(file);
             manualClassificationData = parseManualClassification(text);
             console.log("[Rica] Loaded manual_classification.tsv with", manualClassificationData?.length || 0, "entries");
+            setLoadingProgress((prev) => ({ ...prev, current: prev.current + 1 }));
+          }
+
+          // Acquisition-specific manual classification file (takes precedence)
+          if (acqLabel && filename === `manual_classification_acq-${acqLabel}.tsv`) {
+            const text = await readFileAsText(file);
+            manualClassificationDataAcq = parseManualClassification(text);
+            console.log(`[Rica] Loaded manual_classification_acq-${acqLabel}.tsv with`, manualClassificationDataAcq?.length || 0, "entries");
             setLoadingProgress((prev) => ({ ...prev, current: prev.current + 1 }));
           }
 
@@ -686,12 +758,15 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
       carpetFigures.sort((a, b) => a.name.localeCompare(b.name));
       diagnosticFigures.sort((a, b) => a.name.localeCompare(b.name));
 
+      // Acq-specific file takes precedence over generic manual_classification.tsv
+      const effectiveManualClassification = manualClassificationDataAcq || manualClassificationData;
+
       // Apply manual classifications if available
-      applyManualClassifications(components, manualClassificationData);
+      applyManualClassifications(components, effectiveManualClassification);
 
       trackDatasetLoaded();
 
-      // Pass all data to parent at once - no delays!
+      // Pass all data to parent at once
       onDataLoad({
         componentFigures: compFigures,
         carpetFigures,
@@ -700,7 +775,6 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
         info,
         originalData: [originalData],
         dirPath,
-        // New data for Niivue integration
         mixingMatrix,
         niftiBuffer,
         niftiUrl,
@@ -708,15 +782,45 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
         crossComponentMetrics,
         qcNiftiBuffers,
         externalRegressorsFigure,
-        hasManualClassifications: manualClassificationData && manualClassificationData.length > 0,
+        hasManualClassifications: effectiveManualClassification && effectiveManualClassification.length > 0,
         // Decision tree data
         decisionTreeData,
         statusTableData,
         repetitionTime,
+        acquisitionLabel: acqLabel,
       });
     },
     [onDataLoad, onLoadingStart]
   );
+
+  // Input onChange: scan for acquisition labels; show picker if multiple found.
+  const handleFolderChange = useCallback(
+    async (e) => {
+      const files = Array.from(e.target.files);
+      const labels = extractAcqLabels(files);
+      if (labels.length > 1) {
+        setAcquisitionLabels(labels);
+        setSelectedAcquisition(labels[0]);
+        setPendingLoad({ type: "browser", files });
+      } else {
+        await doProcessFiles(files, labels[0] || null);
+      }
+    },
+    [doProcessFiles]
+  );
+
+  // Called when the user confirms an acquisition from the picker
+  const handleConfirmAcquisition = useCallback(async () => {
+    if (!pendingLoad) return;
+    const { type, files, basePath } = pendingLoad;
+    const label = selectedAcquisition || null;
+    setPendingLoad(null);
+    if (type === "browser") {
+      await doProcessFiles(files, label);
+    } else {
+      await loadFromServer(files, basePath, label);
+    }
+  }, [pendingLoad, selectedAcquisition, doProcessFiles, loadFromServer]);
 
   return (
     <div
@@ -833,6 +937,95 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
                 </div>
               )}
             </div>
+          ) : pendingLoad !== null ? (
+            <>
+              {/* Acquisition picker — shown when multiple acq labels are detected */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                marginBottom: '20px'
+              }}>
+                <img
+                  src={LOGO_DATA_URL}
+                  alt="Rica"
+                  style={{ width: '36px', height: '36px' }}
+                />
+                <div>
+                  <h1 style={{
+                    fontSize: '20px',
+                    fontWeight: 600,
+                    color: 'var(--text-primary)',
+                    margin: 0,
+                    letterSpacing: '-0.02em',
+                  }}>
+                    Rica
+                  </h1>
+                  <p style={{
+                    fontSize: '12px',
+                    color: 'var(--text-tertiary)',
+                    margin: 0,
+                    marginTop: '2px',
+                  }}>
+                    {VERSION_DISPLAY}
+                  </p>
+                </div>
+              </div>
+
+              <p style={{
+                fontSize: '14px',
+                color: 'var(--text-secondary)',
+                lineHeight: 1.6,
+                marginBottom: '16px'
+              }}>
+                Multiple acquisitions found. Select which one to view:
+              </p>
+
+              <select
+                value={selectedAcquisition}
+                onChange={(e) => setSelectedAcquisition(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  color: 'var(--text-primary)',
+                  backgroundColor: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: '10px',
+                  marginBottom: '16px',
+                  cursor: 'pointer',
+                  outline: 'none',
+                }}
+              >
+                {acquisitionLabels.map((label) => (
+                  <option key={label} value={label}>{label}</option>
+                ))}
+              </select>
+
+              <button
+                onClick={handleConfirmAcquisition}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '100%',
+                  height: '44px',
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  color: isDark ? '#0a0a0b' : '#ffffff',
+                  backgroundColor: isDark ? '#fafafa' : '#111827',
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  border: 'none',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.9'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
+              >
+                Load {selectedAcquisition}
+              </button>
+            </>
           ) : (
             <>
               {/* Logo */}
@@ -930,7 +1123,7 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
                   name="file"
                   directory=""
                   webkitdirectory=""
-                  onChange={processFiles}
+                  onChange={handleFolderChange}
                   style={{ display: 'none' }}
                 />
               </label>

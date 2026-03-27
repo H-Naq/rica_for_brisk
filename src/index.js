@@ -74,6 +74,8 @@ function App() {
   const [statusTableData, setStatusTableData] = useState(null);
   // Repetition time from registry
   const [repetitionTime, setRepetitionTime] = useState(null);
+  // Acquisition label selected at load time (e.g. "D1" from acq-D1hypermepi3mm)
+  const [acquisitionLabel, setAcquisitionLabel] = useState(null);
   // Theme state
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('rica-theme');
@@ -190,6 +192,7 @@ function App() {
       setDecisionTreeData(data.decisionTreeData);
       setStatusTableData(data.statusTableData);
       setRepetitionTime(data.repetitionTime);
+      setAcquisitionLabel(data.acquisitionLabel || null);
       setIsLoading(false);
       toggleIntroPopup();
       
@@ -461,6 +464,7 @@ function App() {
                     crossComponentMetrics={crossComponentMetrics}
                     externalRegressorsFigure={externalRegressorsFigure}
                     repetitionTime={repetitionTime}
+                    acquisitionLabel={acquisitionLabel}
                     isDark={isDark}
                   />
                 </TabPanel>

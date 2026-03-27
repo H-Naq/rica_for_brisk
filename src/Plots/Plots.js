@@ -30,7 +30,7 @@ const getColors = (isDark) => ({
 });
 
 
-function Plots({ componentData, componentFigures, originalData, mixingMatrix, niftiBuffer, niftiUrl, maskBuffer, crossComponentMetrics, externalRegressorsFigure, repetitionTime, isDark = false }) {
+function Plots({ componentData, componentFigures, originalData, mixingMatrix, niftiBuffer, niftiUrl, maskBuffer, crossComponentMetrics, externalRegressorsFigure, repetitionTime, acquisitionLabel = null, isDark = false }) {
   const [processedData, setProcessedData] = useState([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selectedClassification, setSelectedClassification] = useState("accepted");
@@ -335,13 +335,15 @@ function Plots({ componentData, componentFigures, originalData, mixingMatrix, ni
       URL.revokeObjectURL(url);
     };
 
-    downloadFile(accepted.join(","), "accepted.txt");
-    downloadFile(rejected.join(","), "rejected.txt");
-    downloadFile(tsv, "manual_classification.tsv", "text/tab-separated-values");
+    // Append acquisition label to filenames so each acquisition gets its own file
+    const acqSuffix = acquisitionLabel ? `_acq-${acquisitionLabel}` : "";
+    downloadFile(accepted.join(","), `accepted${acqSuffix}.txt`);
+    downloadFile(rejected.join(","), `rejected${acqSuffix}.txt`);
+    downloadFile(tsv, `manual_classification${acqSuffix}.tsv`, "text/tab-separated-values");
 
     // Show citation popup after save
     setShowCitationPopup(true);
-  }, [originalData, processedData]);
+  }, [originalData, processedData, acquisitionLabel]);
 
   // Handle pie slice click - map back to original index
   const handlePieClick = useCallback(
