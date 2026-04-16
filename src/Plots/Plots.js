@@ -42,6 +42,10 @@ function Plots({ componentData, componentFigures, originalData, mixingMatrix, ni
     return saved === 'true';
   });
 
+  // Per-component brain map mode: 'static' shows PNG, 'interactive' shows NiiVue
+  // Resets to 'static' on every component selection
+  const [brainMapMode, setBrainMapMode] = useState('static');
+
   // Toggle for component table visibility - persisted to localStorage
   const [isTableCollapsed, setIsTableCollapsed] = useState(() => {
     const saved = localStorage.getItem('rica-table-collapsed');
@@ -71,6 +75,11 @@ function Plots({ componentData, componentFigures, originalData, mixingMatrix, ni
   useEffect(() => {
     localStorage.setItem('rica-table-collapsed', isTableCollapsed.toString());
   }, [isTableCollapsed]);
+
+  // Reset brain map to static PNG whenever the user selects a new component
+  useEffect(() => {
+    setBrainMapMode('static');
+  }, [selectedIndex]);
 
   // Interactive views (time series + FFT) require only the mixing matrix.
   // The brain viewer additionally requires the NIfTI.
@@ -167,8 +176,7 @@ function Plots({ componentData, componentFigures, originalData, mixingMatrix, ni
       const match = label.match(/\d+/g);
       if (!match) return;
 
-      let compNum = match.join("");
-      if (compNum.length === 2) compNum = "0" + compNum;
+      let compNum = match.join("").padStart(3, "0");
       const compName = `comp_${compNum}.png`;
 
       const figure = componentFigures.find((f) => f.name.includes(compName));
@@ -548,19 +556,63 @@ function Plots({ componentData, componentFigures, originalData, mixingMatrix, ni
                 />
               </div>
 
-              {/* Brain stat map viewer in middle — only if NIfTI is available */}
+              {/* Brain map — Static PNG by default, NiiVue when interactive */}
               {hasBrainViewer && (
-                <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
-                  <BrainViewer
-                    niftiBuffer={niftiBuffer}
-                    niftiUrl={niftiUrl}
-                    maskBuffer={maskBuffer}
-                    componentIndex={selectedIndex}
-                    width={750}
-                    height={560}
-                    componentLabel={currentComponentLabel}
-                    isDark={isDark}
-                  />
+                <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                  {/* Static / Interactive toggle */}
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <button
+                      onClick={() => setBrainMapMode('static')}
+                      style={{
+                        padding: '3px 10px',
+                        fontSize: '11px',
+                        fontWeight: 500,
+                        borderRadius: '4px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        backgroundColor: brainMapMode === 'static' ? '#3b82f6' : (isDark ? '#3f3f46' : '#d1d5db'),
+                        color: brainMapMode === 'static' ? '#fff' : (isDark ? '#a1a1aa' : '#6b7280'),
+                      }}
+                    >
+                      Static
+                    </button>
+                    <button
+                      onClick={() => setBrainMapMode('interactive')}
+                      style={{
+                        padding: '3px 10px',
+                        fontSize: '11px',
+                        fontWeight: 500,
+                        borderRadius: '4px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        backgroundColor: brainMapMode === 'interactive' ? '#3b82f6' : (isDark ? '#3f3f46' : '#d1d5db'),
+                        color: brainMapMode === 'interactive' ? '#fff' : (isDark ? '#a1a1aa' : '#6b7280'),
+                      }}
+                    >
+                      Interactive
+                    </button>
+                  </div>
+                  {/* Brain map content */}
+                  {brainMapMode === 'static' ? (
+                    clickedElement && (
+                      <img
+                        alt="Component brain map"
+                        src={clickedElement}
+                        style={{ maxWidth: '750px', width: '100%', height: 'auto', borderRadius: '8px' }}
+                      />
+                    )
+                  ) : (
+                    <BrainViewer
+                      niftiBuffer={niftiBuffer}
+                      niftiUrl={niftiUrl}
+                      maskBuffer={maskBuffer}
+                      componentIndex={selectedIndex}
+                      width={750}
+                      height={560}
+                      componentLabel={currentComponentLabel}
+                      isDark={isDark}
+                    />
+                  )}
                 </div>
               )}
 

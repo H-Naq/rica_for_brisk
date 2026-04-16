@@ -175,8 +175,14 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
       console.log("[Rica] Starting server load with", files.length, "files", acqLabel ? `(acq: ${acqLabel})` : "");
       onLoadingStart();
 
+      // Strip macOS dot-underscore resource forks and hidden dot-files
+      const visibleFiles = files.filter((f) => {
+        const base = f.split("/").pop();
+        return !base.startsWith("._") && !base.startsWith(".");
+      });
+
       // Filter to the selected acquisition first, then to relevant file types
-      const acqFiles = filterByAcquisition(files, acqLabel);
+      const acqFiles = filterByAcquisition(visibleFiles, acqLabel);
       const relevantFiles = acqFiles.filter(
         (f) =>
           f.includes("comp_") ||
@@ -515,8 +521,13 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
     async (files, acqLabel = null) => {
       onLoadingStart();
 
+      // Strip macOS dot-underscore resource forks and hidden dot-files before any processing
+      const visibleFiles = files.filter(
+        (f) => !f.name.startsWith("._") && !f.name.startsWith(".")
+      );
+
       // Filter to selected acquisition first, then to relevant file types
-      const acqFiles = filterByAcquisition(files, acqLabel);
+      const acqFiles = filterByAcquisition(visibleFiles, acqLabel);
       const totalFiles = acqFiles.filter(
         (f) =>
           f.name.includes("comp_") ||
@@ -796,7 +807,9 @@ function IntroPopup({ onDataLoad, onLoadingStart, closePopup, isLoading, isDark 
   // Input onChange: scan for acquisition labels; show picker if multiple found.
   const handleFolderChange = useCallback(
     async (e) => {
-      const files = Array.from(e.target.files);
+      const files = Array.from(e.target.files).filter(
+        (f) => !f.name.startsWith("._") && !f.name.startsWith(".")
+      );
       const labels = extractAcqLabels(files);
       if (labels.length > 1) {
         setAcquisitionLabels(labels);
